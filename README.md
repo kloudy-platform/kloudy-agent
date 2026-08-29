@@ -48,21 +48,59 @@ machine, so a broken collector would draw a calm line over an outage.
 changes, the kernel's counters have restarted at zero, and the interval spanning
 the reboot is dropped rather than clamped.
 
+## How it delivers
+
+Windows are written to a bounded on-disk spool before any upload is attempted,
+and removed only once the platform has acknowledged them. A network outage, a
+platform deploy or an agent restart delays delivery instead of destroying data.
+
+Failures are handled by what they mean, not by a single retry rule:
+
+| Outcome | What happens |
+| --- | --- |
+| Accepted | Windows removed from the spool |
+| `429`, `5xx`, network error | Kept, retried after an exponential backoff |
+| `401`, `403` | **Kept.** A person can fix a token; the history they will want to look at afterwards must still be there |
+| Other `4xx` | **Dropped.** The platform will never accept this payload, and keeping it would block every window queued behind it |
+
+Retry delays are drawn uniformly from below the exponential ceiling rather than
+set to it. Agents retrying on a deterministic schedule reconnect in lockstep
+after an outage and hold the platform down through its own recovery.
+
+The spool is bounded and drops its oldest windows when full, loudly. An agent
+that fills the partition it is monitoring has caused a worse outage than the one
+it existed to report.
+
 ## Status
 
-Working: collection, rate derivation, windowed aggregation, JSON output.
+Working: collection, rate derivation, windowed aggregation, disk spool with
+replay, gzipped HTTPS upload, backoff with jitter, remote schedule configuration.
 
-Not built yet: shipping to the platform (HTTPS batch, per-server token, on-disk
-spool with replay, backoff with jitter), systemd packaging, install script.
+Not built yet: systemd unit, install script, release automation.
 
 ## Usage
 
 ```
 kloudy-agent --once                 # print one raw sample and exit
-kloudy-agent                        # sample every 1s, emit 10s windows as JSON
-kloudy-agent --interval 5s --window 30s
+kloudy-agent --print                # run the loop, write windows to stdout
+kloudy-agent                        # run the loop and upload
+kloudy-agent --interval 5s --window 30s --flush 2m
 kloudy-agent --mount / --mount /var
 ```
+
+The endpoint and token come from the environment so systemd can supply them
+through an `EnvironmentFile` and the token never appears in a command line where
+any local user could read it out of `ps`:
+
+| Variable | Meaning |
+| --- | --- |
+| `KLOUDY_ENDPOINT` | Platform ingest URL. Must be https |
+| `KLOUDY_TOKEN` | This server's token |
+| `KLOUDY_SPOOL_DIR` | Where undelivered windows wait (default `/var/lib/kloudy-agent/spool`) |
+
+Without credentials the agent refuses to start rather than falling back to
+stdout, so a misconfigured unit cannot look healthy while sending nothing
+anywhere. Use `--print` when that is what you actually want.
 
 `--root` points the collector at a different `/proc` tree. It exists so the
 parsers can be exercised against the fixtures in

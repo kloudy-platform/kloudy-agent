@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -203,13 +204,13 @@ func TestStat(t *testing.T) {
 	if s.Min != 1 || s.Max != 10 || s.N != 4 {
 		t.Errorf("Stat = %+v, want min 1 max 10 n 4", s)
 	}
-	if s.Avg() != 5 {
-		t.Errorf("Avg() = %v, want 5", s.Avg())
+	if s.Avg != 5 {
+		t.Errorf("Avg() = %v, want 5", s.Avg)
 	}
 
 	var empty Stat
-	if empty.Avg() != 0 {
-		t.Errorf("Avg() on empty = %v, want 0", empty.Avg())
+	if empty.Avg != 0 {
+		t.Errorf("Avg() on empty = %v, want 0", empty.Avg)
 	}
 }
 
@@ -246,8 +247,8 @@ func TestBucketPreservesSpikeThatAverageHides(t *testing.T) {
 	if b.CPUBusy.Min != 5 {
 		t.Errorf("CPUBusy.Min = %v, want 5", b.CPUBusy.Min)
 	}
-	if avg := b.CPUBusy.Avg(); avg > 30 {
-		t.Errorf("CPUBusy.Avg() = %v, want a mean that understates the burst", avg)
+	if avg := b.CPUBusy.Avg; avg > 30 {
+		t.Errorf("CPUBusy.Avg = %v, want a mean that understates the burst", avg)
 	}
 }
 
@@ -293,8 +294,8 @@ func TestAggregatorEmitsOnWindowRollover(t *testing.T) {
 		if b.Samples == 0 {
 			t.Error("emitted an empty bucket")
 		}
-		if b.NetRx.Avg() != 1000 {
-			t.Errorf("NetRx.Avg() = %v, want 1000 bytes/s", b.NetRx.Avg())
+		if b.NetRx.Avg != 1000 {
+			t.Errorf("NetRx.Avg = %v, want 1000 bytes/s", b.NetRx.Avg)
 		}
 	}
 }
@@ -354,5 +355,97 @@ func TestBucketCarriesClosingCounters(t *testing.T) {
 	}
 	if b.Counters.DiskReadBytes != w.disk.ReadBytes {
 		t.Errorf("Counters.DiskReadBytes = %d, want the closing value %d", b.Counters.DiskReadBytes, w.disk.ReadBytes)
+	}
+}
+
+// Every window is written to the spool as JSON and read back before it is
+// uploaded, so a Stat that cannot survive that round trip loses its mean between
+// being measured and being reported. Holding a running sum instead of the mean
+// itself did exactly that, and no test that stayed in memory could see it.
+func TestBucketSurvivesTheRoundTripThroughTheSpool(t *testing.T) {
+	a := Aggregator{Window: time.Minute}
+	w := newWalker()
+
+	a.Add(w.step(0, 0, 0))
+	for _, busy := range []int{10, 20, 90, 30} {
+		a.Add(w.step(busy, 1000, 2000))
+	}
+
+	before := a.Flush()
+	if before == nil {
+		t.Fatal("Flush() = nil, want a bucket")
+	}
+
+	encoded, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var after Bucket
+	if err := json.Unmarshal(encoded, &after); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if after.Samples != before.Samples {
+		t.Errorf("Samples = %d, want %d", after.Samples, before.Samples)
+	}
+	if after.BootID != before.BootID {
+		t.Errorf("BootID = %q, want %q", after.BootID, before.BootID)
+	}
+
+	for name, pair := range map[string][2]Stat{
+		"cpu_busy":  {before.CPUBusy, after.CPUBusy},
+		"mem_used":  {before.MemUsed, after.MemUsed},
+		"net_rx":    {before.NetRx, after.NetRx},
+		"load1":     {before.Load1, after.Load1},
+		"cpu_steal": {before.CPUSteal, after.CPUSteal},
+	} {
+		got, want := pair[1], pair[0]
+		if got.Avg != round2(want.Avg) {
+			t.Errorf("%s avg = %v, want %v", name, got.Avg, round2(want.Avg))
+		}
+		if got.Min != round2(want.Min) {
+			t.Errorf("%s min = %v, want %v", name, got.Min, round2(want.Min))
+		}
+		if got.Max != round2(want.Max) {
+			t.Errorf("%s max = %v, want %v", name, got.Max, round2(want.Max))
+		}
+	}
+
+	// The burst must still be visible on the far side of the round trip.
+	if after.CPUBusy.Max != 90 {
+		t.Errorf("CPUBusy.Max = %v after decoding, want 90", after.CPUBusy.Max)
+	}
+	if after.CPUBusy.Avg == 0 {
+		t.Error("CPUBusy.Avg = 0 after decoding: the mean did not survive the spool")
+	}
+}
+
+// Re-encoding a decoded window must produce the same payload, because that is
+// exactly what the agent does when it ships what it spooled.
+func TestDecodedBucketReEncodesIdentically(t *testing.T) {
+	a := Aggregator{Window: time.Minute}
+	w := newWalker()
+	a.Add(w.step(0, 0, 0))
+	a.Add(w.step(42, 1234, 5678))
+	a.Add(w.step(7, 4321, 8765))
+
+	first, err := json.Marshal(a.Flush())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var decoded Bucket
+	if err := json.Unmarshal(first, &decoded); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := json.Marshal(&decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(first) != string(second) {
+		t.Errorf("re-encoded payload differs from the original\nfirst:  %s\nsecond: %s", first, second)
 	}
 }

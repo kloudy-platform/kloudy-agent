@@ -15,13 +15,28 @@ import (
 // to full CPU inside a ten-second window moves the mean by a few points and
 // disappears entirely once that window is later rolled up into an hour.
 type Stat struct {
-	Min float64
-	Max float64
-	Sum float64
-	N   int
+	Min float64 `json:"min"`
+	Avg float64 `json:"avg"`
+	Max float64 `json:"max"`
+
+	// N is the number of readings behind the mean. It is deliberately not part
+	// of the wire format: the bucket's own Samples count already carries it, and
+	// repeating it on every metric would pay for the same fact a dozen times per
+	// window across the whole fleet.
+	//
+	// A decoded Stat therefore has N of zero. That is the intended signal: a
+	// Stat that came off the wire is a finished report, not an accumulator, and
+	// must not have further readings folded into it.
+	N int `json:"-"`
 }
 
 // Add folds one reading into the statistic.
+//
+// The mean is maintained incrementally rather than as a running sum divided at
+// the end. That keeps the struct's fields identical to the ones it serialises,
+// so a window survives the round trip through the spool intact. Holding a sum
+// instead would mean the mean could not be reconstructed after decoding, and
+// every spooled window would arrive at the platform averaging zero.
 func (s *Stat) Add(v float64) {
 	if s.N == 0 || v < s.Min {
 		s.Min = v
@@ -29,27 +44,20 @@ func (s *Stat) Add(v float64) {
 	if s.N == 0 || v > s.Max {
 		s.Max = v
 	}
-	s.Sum += v
+
 	s.N++
+	s.Avg += (v - s.Avg) / float64(s.N)
 }
 
-// Avg returns the mean, or zero if nothing was recorded.
-func (s Stat) Avg() float64 {
-	if s.N == 0 {
-		return 0
-	}
-	return s.Sum / float64(s.N)
-}
-
-// MarshalJSON emits the compact triple the wire format carries, rounded to two
-// decimals. At this resolution the extra digits describe sampling noise rather
-// than the machine, and they cost real bandwidth across a fleet.
+// MarshalJSON emits the triple rounded to two decimals. At this resolution the
+// extra digits describe sampling noise rather than the machine, and they cost
+// real bandwidth across a fleet.
 func (s Stat) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Min float64 `json:"min"`
 		Avg float64 `json:"avg"`
 		Max float64 `json:"max"`
-	}{round2(s.Min), round2(s.Avg()), round2(s.Max)})
+	}{round2(s.Min), round2(s.Avg), round2(s.Max)})
 }
 
 func round2(v float64) float64 {
