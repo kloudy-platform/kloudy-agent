@@ -1,3 +1,25 @@
+# Build output
 /dist/
+/kloudy-agent
+
+# Go
+*.exe
+*.dll
+*.so
+*.dylib
 *.test
+*.out
+go.work
+go.work.sum
+
+# Editors
+/.fleet
+/.idea
+/.nova
+/.vscode
+/.zed
+*.swp
+
+# OS
 .DS_Store
+Thumbs.db

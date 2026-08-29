@@ -15,8 +15,18 @@ fmt:
 fmt-check:
 	@test -z "$$(gofmt -l .)" || { echo "unformatted files:"; gofmt -l .; exit 1; }
 
+# install.sh must be self-contained: it runs over SSH on a machine that has
+# nothing else from this repository. The unit is therefore embedded in it, and
+# this target proves the copy has not drifted from the readable original.
+.PHONY: verify-unit
+verify-unit:
+	@awk '/^cat > /{f=1; next} /^UNITFILE$$/{f=0} f' deploy/install.sh > /tmp/kloudy-embedded-unit
+	@diff -u deploy/kloudy-agent.service /tmp/kloudy-embedded-unit \
+		|| { echo "deploy/install.sh has drifted from deploy/kloudy-agent.service"; exit 1; }
+	@echo "embedded unit matches deploy/kloudy-agent.service"
+
 .PHONY: check
-check: fmt-check test
+check: fmt-check verify-unit test
 
 .PHONY: build
 build:

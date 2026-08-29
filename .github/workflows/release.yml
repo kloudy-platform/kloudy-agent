@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Verify before publishing
+        run: make check
+
+      - name: Build
+        run: make dist VERSION=${GITHUB_REF_NAME#v}
+
+      # Published with the binaries and never separately. The install script
+      # refuses to run anything whose checksum it has not been given, so a
+      # release without these is a release nobody can install.
+      - name: Publish release with checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/kloudy-agent-linux-amd64 \
+            dist/kloudy-agent-linux-arm64 \
+            dist/SHA256SUMS

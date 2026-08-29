@@ -1,0 +1,56 @@
+[Unit]
+Description=Kloudy metrics agent
+Documentation=https://github.com/kloudy-platform/kloudy-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kloudy
+Group=kloudy
+
+# Holds KLOUDY_ENDPOINT and KLOUDY_TOKEN. Kept out of the command line so the
+# token never appears in ps output, where any local user could read it.
+EnvironmentFile=/etc/kloudy/agent.env
+ExecStart=/usr/local/bin/kloudy-agent
+
+Restart=always
+RestartSec=5s
+
+# /var/lib/kloudy-agent, created and owned by the service user. It is the only
+# path the agent can write to, and it holds the spool of undelivered windows.
+StateDirectory=kloudy-agent
+StateDirectoryMode=0700
+
+# The agent reads /proc, calls statfs, and makes outbound HTTPS requests. It
+# needs nothing else, so it is granted nothing else. This block is also the
+# answer to the reasonable question of what this binary can do on the machine.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=default
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# AF_UNIX is kept alongside the IP families because name resolution on some
+# distributions goes through a local socket. Removing it would harden the unit
+# slightly and break DNS on those machines.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

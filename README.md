@@ -110,6 +110,62 @@ parsers can be exercised against the fixtures in
 kloudy-agent --once --root internal/collect/testdata/proc
 ```
 
+## Installation
+
+`deploy/install.sh` installs or upgrades the agent. Running it again with the
+same version is a no-op; running it with a new one is an upgrade.
+
+```
+KLOUDY_AGENT_VERSION=1.4.0 \
+KLOUDY_AGENT_SHA256=<checksum for this architecture> \
+KLOUDY_ENDPOINT=https://ingest.kloudy.dev/v1/metrics \
+KLOUDY_TOKEN=<this server's token> \
+sudo -E bash install.sh
+```
+
+Every value comes from the environment, so no caller-supplied string is ever
+interpolated into the script's source.
+
+What it does: verifies the checksum before the download is made executable,
+creates a `kloudy` account with no shell, installs the binary, writes
+`/etc/kloudy/agent.env` at mode `0600`, installs the systemd unit, starts the
+service, and confirms it is actually running before reporting success.
+
+**The checksum is required and has no fallback.** This binary runs on every
+server, which makes the download the most attractive supply-chain target in the
+product, and one nobody verified is an unauthenticated code path onto all of
+them. Never install this with `curl | bash`.
+
+Detected automatically: `amd64` and `arm64`. Required on the machine: systemd,
+`sha256sum`, and either `curl` or `wget`.
+
+### How Kloudy installs it
+
+Kloudy already holds an authenticated SSH session with the server, so it uploads
+and runs this script over that channel rather than having the machine fetch it.
+The script itself therefore never travels over an unauthenticated path, and the
+expected checksum arrives the same way. Only the binary is downloaded, and it is
+verified against a checksum the machine did not choose.
+
+### Upgrades
+
+The agent never updates itself. The platform's reply can tell an agent its
+version is old, and the platform then schedules the upgrade over SSH, in waves.
+A self-updating agent turns one bad release into a fleet-wide outage on machines
+you can no longer reach.
+
+### Uninstalling
+
+```
+sudo systemctl disable --now kloudy-agent
+sudo rm -f /etc/systemd/system/kloudy-agent.service /usr/local/bin/kloudy-agent
+sudo rm -rf /etc/kloudy /var/lib/kloudy-agent
+sudo userdel kloudy
+```
+
+Removing the agent degrades monitoring to the platform's SSH collector rather
+than breaking the server. Nothing else on the machine depends on it.
+
 ## Development
 
 ```

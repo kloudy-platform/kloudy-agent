@@ -1,0 +1,11 @@
+* text=auto eol=lf
+
+*.go diff=golang
+*.md diff=markdown
+*.sh text eol=lf
+
+# The /proc fixtures are parsed byte for byte; they must never be
+# line-ending normalised on a Windows checkout.
+internal/collect/testdata/** -text
+
+/.github export-ignore

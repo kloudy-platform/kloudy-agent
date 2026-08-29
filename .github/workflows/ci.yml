@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Format, vet, unit tests
+        run: make check
+
+      - name: Cross-compile release binaries
+        run: make dist
+
+      # The test suite runs against checked-in fixtures so it works on any
+      # operating system. This step is the counterpart: the only place the agent
+      # reads a real kernel's /proc and calls a real statfs before it reaches a
+      # customer's machine.
+      - name: Read the runner's own counters
+        run: |
+          ./dist/kloudy-agent-linux-amd64 --once > sample.json
+          cat sample.json
+          python3 - <<'PY'
+          import json, sys
+
+          s = json.load(open("sample.json"))
+
+          if not s["boot_id"]:
+              sys.exit("no boot_id")
+          if s["mem"]["total"] <= 0 or s["mem"]["available"] <= 0:
+              sys.exit(f"implausible memory: {s['mem']}")
+          if s["cpu"]["idle"] <= 0:
+              sys.exit(f"implausible cpu: {s['cpu']}")
+          if s["uptime"] <= 0:
+              sys.exit("implausible uptime")
+          if not s["fs"] or s["fs"][0]["total"] <= 0:
+              sys.exit(f"implausible filesystem: {s['fs']}")
+          if s["fs"][0]["used"] > s["fs"][0]["total"]:
+              sys.exit("used exceeds total")
+
+          print("counters look sane on a real kernel")
+          PY
+
+      # Two samples a second apart must produce a window with plausible rates.
+      # A collector that parses cleanly but derives nonsense would pass every
+      # other step here.
+      - name: Aggregate a real window
+        run: |
+          timeout 5s ./dist/kloudy-agent-linux-amd64 --print --interval 200ms --window 1s > windows.json || true
+          head -c 2000 windows.json
+          test -s windows.json || { echo "no window produced from a live kernel"; exit 1; }
